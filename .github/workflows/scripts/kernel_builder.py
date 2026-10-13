@@ -2232,6 +2232,13 @@ CONFIG_CIFS_XATTR=y
         if sel_rej.exists():
             if not self._recover_susfs_selinux_hide_c(ksu_dir):
                 return False
+        # kernel/runtime/ksud_integration.c likewise (SukiSU's
+        # second-stage module_blacklist call) - see
+        # _recover_susfs_ksud_integration_c.
+        ksud_rej = ksu_dir / "kernel/runtime/ksud_integration.c.rej"
+        if ksud_rej.exists():
+            if not self._recover_susfs_ksud_integration_c(ksu_dir):
+                return False
 
         init_c = ksu_dir / "kernel/core/init.c"
         reject_files = list(ksu_dir.glob("**/*.rej"))
@@ -2522,6 +2529,91 @@ CONFIG_CIFS_XATTR=y
             "kernel). Everything outside those bodies matched exactly, so "
             "the hunk's result was applied directly "
             "(see _recover_susfs_selinux_hide_c)."
+        )
+        return True
+
+    # SukiSU-Ultra's own lines in the second_stage block of
+    # ksu_handle_execveat_ksud() (c4d1f7ff / f868135d, 2026-10).
+    _KSUD_BLACKLIST_BLOCK = (
+        '            // Not earlier: a blocked module failing to load in first stage\n'
+        '            // init is fatal, ksuinit uses modules.blocklist for that instead.\n'
+        '            ksu_module_blacklist_apply();\n'
+    )
+
+    def _recover_susfs_ksud_integration_c(self, ksu_dir) -> bool:
+        # Known, narrow drift point #3: SukiSU-Ultra ported upstream
+        # KernelSU's module_blacklist (tiann#3881) but, unlike upstream,
+        # installs the blacklist when second stage init starts
+        # (f868135d - installing it at kernelsu_init can bootloop on
+        # first stage modules). That adds ksu_module_blacklist_apply()
+        # inside the second_stage block of ksu_handle_execveat_ksud(),
+        # exactly the block 10_enable_susfs_for_ksu.patch rewrites (it
+        # was written against upstream, which has no such call there),
+        # so that hunk is rejected.
+        #
+        # Recovery: take SukiSU's 3 lines out, check the region now
+        # matches the rejected hunk's "old" side byte-for-byte, swap in
+        # its "new" side, then put the call back right after
+        # ksu_feature_apply_forced() in the rewritten block (same spot
+        # SukiSU has it). Any other drift -> False, build hard-fails.
+        # Without putting the call back, block_modules would silently
+        # do nothing; upstream's ksu_module_blacklist_init() is NOT
+        # used - SukiSU's module_blacklist.h has no such function.
+        target = ksu_dir / "kernel/runtime/ksud_integration.c"
+        rej = ksu_dir / "kernel/runtime/ksud_integration.c.rej"
+        if not target.exists() or not rej.exists():
+            return False
+
+        hunks = []
+        cur = None
+        for line in rej.read_text().splitlines(keepends=True):
+            if line.startswith('@@'):
+                cur = {'old': [], 'new': []}
+                hunks.append(cur)
+                continue
+            if cur is None or line.startswith('\\'):
+                continue
+            tag, body = line[:1], line[1:]
+            if tag in (' ', '-'):
+                cur['old'].append(body)
+            if tag in (' ', '+'):
+                cur['new'].append(body)
+        if len(hunks) != 1:
+            return False
+        old, new = ''.join(hunks[0]['old']), ''.join(hunks[0]['new'])
+
+        content = target.read_text()
+        if content.count(self._KSUD_BLACKLIST_BLOCK) != 1:
+            return False
+        content = content.replace(self._KSUD_BLACKLIST_BLOCK, '', 1)
+        if content.count(old) != 1:
+            return False
+        content = content.replace(old, new, 1)
+
+        forced = '                ksu_feature_apply_forced();\n'
+        if content.count(forced) != 1 or 'ksu_module_blacklist_apply' in content:
+            return False
+        content = content.replace(
+            forced,
+            forced + '                // Not earlier: a blocked module failing to load in first stage\n'
+                     '                // init is fatal, ksuinit uses modules.blocklist for that instead.\n'
+                     '                ksu_module_blacklist_apply();\n',
+            1,
+        )
+        if '#include "feature/module_blacklist.h"' not in content:
+            return False
+
+        target.write_text(content)
+        rej.unlink()
+        orig = ksu_dir / "kernel/runtime/ksud_integration.c.orig"
+        if orig.exists():
+            orig.unlink()
+        logger.info(
+            "kernel/runtime/ksud_integration.c: SUSFS<->KernelSU patch hunk "
+            "didn't match because SukiSU-Ultra calls ksu_module_blacklist_apply() "
+            "at second stage init (upstream KernelSU doesn't). Applied the hunk "
+            "and put the call back after ksu_feature_apply_forced() "
+            "(see _recover_susfs_ksud_integration_c)."
         )
         return True
 
