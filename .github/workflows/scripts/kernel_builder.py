@@ -1676,11 +1676,11 @@ CONFIG_CIFS_XATTR=y
         here yet since nothing currently built uses that branch.
 
         Two small prerequisite patches (proc_dou8vec_minmax() and its
-        follow-up data-race fix) are tried first with -N (skip
-        cleanly if already applied) - recent kernel sub_levels almost
-        certainly already have this backported via normal upstream
-        -stable updates, so these are expected to no-op in practice
-        and are only here for older/divergent source trees.
+        follow-up data-race fix) are handled first by
+        _apply_bbrv3_prereqs(): each one is either detected as already
+        present, applied as a whole, or left alone - never half-applied.
+        Every branch built here already has both via -stable, so in
+        practice they are detected as present and nothing is touched.
 
         The main patch is tried at fuzz=0 first, then fuzz=3 as a
         fallback (dry-run for both, only ever actually applying the
@@ -1716,12 +1716,13 @@ CONFIG_CIFS_XATTR=y
         patch_dir = Path(__file__).parent / "patches"
         self._chdir(common_dir)
 
-        # Prerequisites - expected to silently no-op on recent trees.
-        for prereq in ["bbrv3_prereq_sysctl_dou8vec_minmax.patch",
-                       "bbrv3_prereq_sysctl_dou8vec_minmax_races.patch"]:
-            p = patch_dir / prereq
-            if p.exists():
-                self._run_cmd(f"patch -p1 -N -F 0 --batch < {p}", check=False)
+        # Prerequisites - all-or-nothing, see _apply_bbrv3_prereqs().
+        prereq_note = self._apply_bbrv3_prereqs(patch_dir, common_dir)
+        if prereq_note is None:
+            self._chdir(self.work_dir)
+            self._mark("bbrv3", "failed",
+                       "proc_dou8vec_minmax() missing and its prereq patch does not apply")
+            return
 
         main_patch = patch_dir / f"bbrv3_{fb}.patch"
         if not main_patch.exists():
@@ -1780,7 +1781,85 @@ CONFIG_CIFS_XATTR=y
             return
 
         self._bbrv3_applied = True
-        self._mark("bbrv3", "applied", "" if applied_fuzz == 0 else f"applied with fuzz={applied_fuzz}")
+        notes = [] if applied_fuzz == 0 else [f"applied with fuzz={applied_fuzz}"]
+        if prereq_note:
+            notes.append(prereq_note)
+        self._mark("bbrv3", "applied", "; ".join(notes))
+
+    # proc_dou8vec_minmax() is the one thing BBRv3 needs from the prereqs;
+    # its EXPORT line is how we tell the function is really there.
+    _DOU8VEC_EXPORT = "EXPORT_SYMBOL_GPL(proc_dou8vec_minmax);"
+
+    def _apply_bbrv3_prereqs(self, patch_dir, common_dir):
+        """Applies the two BBRv3 prerequisite patches all-or-nothing.
+
+        The old code ran `patch -N -F 0` directly. -N only skips hunks it
+        recognises as already applied one by one, so on trees that
+        already have proc_dou8vec_minmax() (every branch built here, via
+        -stable) some hunks still "succeeded" against a different spot:
+        a second copy of the sysctl_check_table_array() check in
+        fs/proc/proc_sysctl.c and a second -ENOSYS stub in kernel/sysctl.c
+        (inside the !CONFIG_PROC_SYSCTL branch, so GKI still compiled),
+        plus .rej/.orig files left in the tree.
+
+        Now, per patch:
+          - already present (reverse dry-run is clean, or for the main
+            prereq the exported function is already in kernel/sysctl.c)
+            -> nothing is touched;
+          - otherwise, the whole patch dry-runs clean -> apply it;
+          - otherwise -> leave the tree alone and say so.
+        Returns a short note for patch-status ("" when everything was
+        already present), or None if proc_dou8vec_minmax() is still
+        missing afterwards - BBRv3 would not compile, so it is skipped.
+        """
+        sysctl_c = common_dir / "kernel/sysctl.c"
+
+        def dou8vec_present():
+            return sysctl_c.exists() and self._DOU8VEC_EXPORT in sysctl_c.read_text()
+
+        prereqs = [
+            ("bbrv3_prereq_sysctl_dou8vec_minmax.patch", dou8vec_present),
+            ("bbrv3_prereq_sysctl_dou8vec_minmax_races.patch", None),
+        ]
+        notes = []
+        for name, present_check in prereqs:
+            p = patch_dir / name
+            if not p.exists():
+                notes.append(f"{name} missing")
+                continue
+            # -f, not --batch: with --batch, `patch -R` on a patch that is
+            # NOT applied says "Unreversed patch detected! Ignoring -R"
+            # and dry-runs it forward, which would look like "present".
+            # Both probes are silenced: they are expected to fail on one
+            # side, and a stray "N out of M hunks FAILED" in the build log
+            # reads like a real problem. The decision is logged below.
+            reverse = self._run_cmd(
+                f"patch -p1 -R -f -F 0 --dry-run -s < {p} > /dev/null 2>&1", check=False)
+            if reverse.returncode == 0 or (present_check and present_check()):
+                logger.info(f"BBRv3 prereq {name}: already in this kernel - not applied")
+                continue
+            forward = self._run_cmd(
+                f"patch -p1 -N -F 0 --dry-run --batch -s < {p} > /dev/null 2>&1", check=False)
+            if forward.returncode != 0:
+                logger.warning(
+                    f"BBRv3 prereq {name}: neither present nor cleanly "
+                    f"applicable - left the tree untouched")
+                notes.append(f"{name} not applied")
+                continue
+            res = self._run_cmd(f"patch -p1 -N -F 0 --batch --no-backup-if-mismatch < {p}", check=False)
+            if res.returncode != 0:
+                logger.warning(f"BBRv3 prereq {name}: dry-run clean but real apply failed")
+                notes.append(f"{name} failed")
+                continue
+            notes.append(f"{name} applied")
+
+        if not dou8vec_present():
+            logger.warning(
+                "BBRv3: proc_dou8vec_minmax() is not in kernel/sysctl.c and "
+                "its prereq patch could not be applied - skipping BBRv3 "
+                "rather than building something that cannot link.")
+            return None
+        return "; ".join(notes)
 
     # fs/namespace.c: on SOME specific branches/sub_levels, the SUSFS
     # patch was written against a version of this file that lacks

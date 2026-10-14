@@ -374,6 +374,7 @@ PY
 # drift_report <files>  - who changed each file with a rejected hunk
 KNOWN_DRIFT_kernel_core_init_c="_recover_susfs_init_c"
 KNOWN_DRIFT_kernel_feature_selinux_hide_c="_recover_susfs_selinux_hide_c"
+KNOWN_DRIFT_kernel_runtime_ksud_integration_c="_recover_susfs_ksud_integration_c"
 drift_report() {
     local f log key known
     [ -n "$1" ] || return 0
