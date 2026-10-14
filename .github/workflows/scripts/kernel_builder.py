@@ -2185,15 +2185,17 @@ CONFIG_CIFS_XATTR=y
 
     def _recover_susfs_init_c(self, ksu_dir) -> bool:
         # Known, narrow drift point: 10_enable_susfs_for_ksu.patch was
-        # authored against an older SukiSU-Ultra. Hunks #1/#2/#4/#5/#6/#8
-        # of its kernel/core/init.c diff apply fine (they land via
-        # `patch`'s own fuzzy matching before we ever get here). Hunks
-        # #3 (include-list cleanup) and #7 (the main kernelsu_init()
-        # body reorg) don't - current SukiSU-Ultra has since inserted
-        # unrelated code in the middle of both regions (a
-        # "feature/uts_spoof.h" include, and a spoof_release/
-        # spoof_version block inside kernelsu_init()) that shifts
-        # context just enough to break the fuzzy match.
+        # authored against upstream KernelSU, not SukiSU-Ultra. Hunks
+        # #1/#2/#4/#6/#8 of its kernel/core/init.c diff apply fine (they
+        # land via `patch`'s own fuzzy matching before we ever get
+        # here). Hunks #3 (include-list cleanup), #5 (top of
+        # kernelsu_init(): ksu_bundled / x86 check / ksu_late_loaded)
+        # and #7 (the main kernelsu_init() body reorg) don't - SukiSU-
+        # Ultra has extra code in or next to all three regions (a
+        # "feature/uts_spoof.h" include, the spoof_release/spoof_version
+        # module params and the ksu_spoof_version() block inside
+        # kernelsu_init()) that shifts context just enough to break the
+        # fuzzy match.
         #
         # This isn't optional cleanup we can skip by leaving the old
         # code in place: kernel/Kbuild's own hunk (which DOES apply
@@ -2251,6 +2253,8 @@ CONFIG_CIFS_XATTR=y
 
         content = init_c.read_text()
         original = content
+        init_rej = ksu_dir / "kernel/core/init.c.rej"
+        rej_text = init_rej.read_text() if init_rej.exists() else ""
 
         try:
             # --- hunk #3 equivalent: includes + x86 dispatcher-safety block ---
@@ -2390,6 +2394,19 @@ CONFIG_CIFS_XATTR=y
             # file we're not confident compiles.
             return False
 
+        # The edits above are fixed strings written for the hunks as
+        # they are today. If susfs4ksu later adds something new to one
+        # of the rejected hunks (an extra init call, a new include),
+        # those edits would still "succeed" and the new line would
+        # silently never land - the build passes, the feature is gone.
+        # So check the result against what the rejected hunks actually
+        # asked for, the same way the other two recoveries do.
+        problems = self._check_init_c_against_rej(rej_text, original, content)
+        if problems:
+            for p in problems:
+                logger.error(f"kernel/core/init.c recovery: {p}")
+            return False
+
         # kernel/Kbuild's own hunk (which DOES apply cleanly, separate
         # from init.c's failure) drops infra/symbol_resolver.o along
         # with the rest of the old hook-manager machinery, on the
@@ -2422,12 +2439,18 @@ CONFIG_CIFS_XATTR=y
                     )
                 )
 
+        n_rej = self._rej_hunk_count(rej_text)
         init_c.write_text(content)
         for r in reject_files:
             r.unlink()
+        orig = ksu_dir / "kernel/core/init.c.orig"
+        if orig.exists():
+            orig.unlink()
         logger.info(
-            "kernel/core/init.c: hunks #3/#7 of the SUSFS<->KernelSU patch "
-            "didn't match (known drift - see _recover_susfs_init_c). "
+            f"kernel/core/init.c: {n_rej} hunk(s) of the SUSFS<->KernelSU patch "
+            "didn't match (known drift, normally #3/#5/#7 - see "
+            "_recover_susfs_init_c). The result was checked against every "
+            "line those hunks add or remove. "
             "Manually finished the same migration those hunks were "
             "trying to make: retired the old hook-manager/symbol-"
             "resolver init calls (their backing .o files are already "
@@ -2616,6 +2639,59 @@ CONFIG_CIFS_XATTR=y
             "(see _recover_susfs_ksud_integration_c)."
         )
         return True
+
+    # Lines in a rejected init.c hunk that are statements/includes we can
+    # check for. Anything else (blank lines, braces, comments, #endif)
+    # is layout, not content.
+    _INIT_C_CALL = re.compile(r'^\s*(?:[A-Za-z_]\w*\s*\(.*\)\s*;|#include\s+.+)\s*$')
+
+    # Present in the upstream-KernelSU context of hunk #7 but not in
+    # SukiSU-Ultra: SukiSU installs the module blacklist at second stage
+    # init (ksu_module_blacklist_apply() in ksud_integration.c, see
+    # _recover_susfs_ksud_integration_c) and has no _init() for it.
+    _INIT_C_UPSTREAM_ONLY = {'ksu_module_blacklist_init();'}
+
+    @staticmethod
+    def _rej_hunk_count(rej_text: str) -> int:
+        return sum(1 for l in rej_text.splitlines() if l.startswith('@@'))
+
+    @classmethod
+    def _check_init_c_against_rej(cls, rej_text: str, before: str, after: str) -> list:
+        # Compares the recovered file with what the rejected hunks asked
+        # for, one statement/include at a time, by COUNT (the same line
+        # can legitimately exist more than once - e.g. the pr_alert
+        # banner lines are shared by the x86 check hunk #5 removes and
+        # the CONFIG_KSU_DEBUG banner that stays):
+        #   after == before - (times the hunks remove it) + (times they add it)
+        # `before` is init.c as `patch` left it (its good hunks applied,
+        # the rejected ones not). A hunk that MOVES a call (removes it
+        # in one place, adds it in another) balances out. Returns a list
+        # of problems; empty = OK.
+        if not rej_text:
+            return []
+        added, removed = {}, {}
+        for line in rej_text.splitlines():
+            if line.startswith(('+++', '---')) or line[:1] not in '+-':
+                continue
+            body = line[1:].strip()
+            if not cls._INIT_C_CALL.match(body) or body in cls._INIT_C_UPSTREAM_ONLY:
+                continue
+            bucket = added if line[0] == '+' else removed
+            bucket[body] = bucket.get(body, 0) + 1
+
+        def count(text, body):
+            return sum(1 for l in text.splitlines() if l.strip() == body)
+
+        problems = []
+        for body in sorted(set(added) | set(removed)):
+            want = max(count(before, body) - removed.get(body, 0), 0) + added.get(body, 0)
+            have = count(after, body)
+            if have != want:
+                problems.append(
+                    f"{body!r}: the rejected hunks expect it {want} time(s), "
+                    f"the recovered file has it {have} time(s)"
+                )
+        return problems
 
     @staticmethod
     def _replace_once(content: str, old: str, new: str) -> str:

@@ -336,7 +336,12 @@ patch_test() {
     echo "  $n_failed hunk(s) failed in: ${failed_files:-?}"
     rec="$(cd "$BUILDER_DIR" && python3 - "$WORKTREE" 2>/dev/null <<'PY'
 import sys, logging
-logging.disable(logging.CRITICAL)
+# Only the recovery's own ERROR lines (why it refused) are passed through,
+# as REASON= markers; everything else kernel_builder logs stays quiet.
+class _Reason(logging.Handler):
+    def emit(self, record):
+        print("REASON=" + record.getMessage())
+logging.basicConfig(level=logging.ERROR, handlers=[_Reason()])
 sys.path.insert(0, '.')
 from pathlib import Path
 import kernel_builder as kb
@@ -344,7 +349,8 @@ b = object.__new__(kb.KernelBuilder)
 print("RECOVERY=" + ("True" if kb.KernelBuilder._recover_susfs_init_c(b, Path(sys.argv[1])) else "False"))
 PY
 )"
-    # kernel_builder prints things on import - keep only our marker line
+    # kernel_builder prints things on import - keep only our marker lines
+    reasons="$(printf '%s\n' "$rec" | grep '^REASON=' | cut -d= -f2-)"
     rec="$(printf '%s\n' "$rec" | grep -m1 '^RECOVERY=' | cut -d= -f2)"
     if [ "$rec" = "True" ]; then
         left="$(grep -rn --include='*.c' --include='*.h' ksu_late_loaded "$WORKTREE/kernel" 2>/dev/null | grep -vc '\.orig' || true)"
@@ -357,6 +363,9 @@ PY
         fi
     elif [ "$rec" = "False" ]; then
         DETAIL="pipeline recovery could not handle this - upstream changed something new"
+        if [ -n "$reasons" ]; then
+            printf '%s\n' "$reasons" | sed 's/^/    recovery: /'
+        fi
     else
         DETAIL="could not run kernel_builder.py (python error)"
     fi
