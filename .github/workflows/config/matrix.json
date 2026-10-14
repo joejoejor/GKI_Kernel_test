@@ -168,6 +168,6 @@
         {"sub_level": "24", "os_patch_level": "2026-06", "kernel_tag": "android17-6.18.24_r00", "lts": true, "enabled": false},
         {"sub_level": "32", "os_patch_level": "2026-06", "kernel_tag": "android17-6.18.32_r00", "lts": true, "enabled": false},
         {"sub_level": "32", "os_patch_level": "2026-09", "kernel_tag": "android17-6.18-2026-09_r7", "enabled": false},
-        {"sub_level": "33", "os_patch_level": "2026-09", "kernel_tag": "ab6999de8fbcce67ab8a6fdc381eef52537c44c6", "lts": true, "enabled": false}
+        {"sub_level": "33", "os_patch_level": "2026-09", "kernel_tag": "a5859eb5e6fddff7a5d93324741e259ffab82471", "lts": true, "enabled": false}
     ]
 }
