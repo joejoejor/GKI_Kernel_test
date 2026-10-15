@@ -190,7 +190,7 @@ Active if it prints `namespace-test-ok` without an error.
 su -c "zcat /proc/config.gz | grep CONFIG_MACVLAN"
 su -c "/system/bin/ip link add mvtest link wlan0 type macvlan mode bridge && /system/bin/ip -d link show mvtest && /system/bin/ip link del mvtest"
 ```
-Active if it shows `CONFIG_MACVLAN=y` and the second command prints `mvtest` with `macvlan mode bridge` and no error. CPU and process limits (`--cpus`, `--pids-limit`) are left out on purpose: `CONFIG_CFS_BANDWIDTH` and `CONFIG_CGROUP_PIDS` change struct layouts in the GKI KMI and would break vendor modules.
+Active if it shows `CONFIG_MACVLAN=y` and the second command prints `mvtest` with `macvlan mode bridge` and no error. CPU limits (`--cpus`) are left out on purpose: `CONFIG_CFS_BANDWIDTH` changes `struct rq` in the GKI KMI and would break vendor scheduler modules. A plain `CONFIG_CGROUP_PIDS` (`--pids-limit`) would also break the KMI; the experimental opt-in `--droidspaces-pids` (android13-5.15 only, off in releases) instead gives pids the cgroup id of the unused v1 controller net_prio, so struct layouts and symbol CRCs stay stock. Check it with `su -c "cat /sys/fs/cgroup/cgroup.controllers"` - `pids` must be listed.
 
 **NTSync (Winlator/Wine)** — kernel driver (`/dev/ntsync`) emulating Windows NT sync primitives (semaphores/mutexes/events) natively instead of over futex: better compatibility and lower overhead for Wine-based layers like Winlator. Only on branches with a compatible backport.
 ```bash
@@ -443,6 +443,7 @@ Tracked families: `android12-5.10`, `android13-5.15`, `android14-6.1`, `android1
 | `--no-kpm` | Disable KPM | False |
 | `--bbg` | Enable Baseband-guard | False |
 | `--droidspaces` | Enable Droidspaces (android12/13/14 only) | False |
+| `--droidspaces-pids` | EXPERIMENTAL: `CONFIG_CGROUP_PIDS` for Droidspaces `--pids-limit` via the net_prio cgroup slot swap (android13-5.15 only, needs `--droidspaces`) | False |
 | `--op8e` | Enable OnePlus 8E support | False |
 | `--bbr-version` | Congestion control: `none`, `bbr1`, or `bbr3` (bbr3 android12/13/14 only) | bbr1 |
 | `--no-release` | Don't create a GitHub Release | False |

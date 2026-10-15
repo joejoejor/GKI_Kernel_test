@@ -119,8 +119,8 @@ ANDROID_KERNEL_MAP = {
 # a hash is valid on exactly one). Branches not listed build from HEAD.
 # android13-5.15 is built, flashed and daily-driven; 6.1 / 6.6 are
 # verified to patch (incl. _recover_susfs_init_c) but not device-tested.
-DEFAULT_KSU_REF = "ecbc60d5769c34faf505e01fac64fe0e69f0a4de"
-DEFAULT_KSU_VERSION_CODE = 40993
+DEFAULT_KSU_REF = "1324dd358468801868339d3b963b639b64947c1d"
+DEFAULT_KSU_VERSION_CODE = 40996
 DEFAULT_SUSFS_PINS = {
     "gki-android13-5.15": "2ad297356931ba06b4edc0860f42fdd143b02ffd",
     "gki-android14-6.1": "273ae364c5b7c92ceb15634c9f075b6fc0501048",
@@ -198,6 +198,9 @@ class BuildConfig:
     # се ползват вендорските cfg80211/mac80211 от /vendor/lib/modules.
     use_ath9k: bool = False
     use_droidspaces: bool = False
+    # Experimental, opt-in: CONFIG_CGROUP_PIDS for Droidspaces --pids-limit
+    # via the kABI-neutral net_prio -> pids cgroup slot swap (android13-5.15).
+    use_droidspaces_pids: bool = False
     support_op8e: bool = False
     use_extra_net: bool = False
     bbr_version: str = "bbr1"
@@ -304,6 +307,7 @@ class BuildConfig:
             "allow_bazel": self.allow_bazel,
             "use_ath9k": self.use_ath9k,
             "use_droidspaces": self.use_droidspaces,
+            "use_droidspaces_pids": self.use_droidspaces_pids,
             "support_op8e": self.support_op8e,
             "use_extra_net": self.use_extra_net,
             "bbr_version": self.bbr_version,

@@ -28,6 +28,7 @@ DISPLAY_NAMES = {
     "task_mmu_fixes": "task_mmu.c Fixes",
     "baseband_guard": "Baseband-guard",
     "droidspaces": "Droidspaces",
+    "droidspaces_pids": "Droidspaces pids",
     "bbrv3": "BBRv3",
     # Not a patch - the post-build check that every option written into
     # gki_defconfig actually survived into the built .config. Last

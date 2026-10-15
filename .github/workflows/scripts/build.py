@@ -107,6 +107,11 @@ def parse_args() -> argparse.Namespace:
                              "support - real Linux namespace isolation (PID/IPC/Mount) instead of a plain "
                              "chroot, so a full distro can run its own init (systemd/OpenRC). Only wired up "
                              "for kernel 5.10/5.15/6.1 (android12/13/14) so far.")
+    parser.add_argument("--droidspaces-pids", action="store_true",
+                        help="EXPERIMENTAL, needs --droidspaces, android13-5.15 only: enable "
+                             "CONFIG_CGROUP_PIDS (Droidspaces --pids-limit) by giving pids the cgroup "
+                             "id of net_prio (turned off), so the GKI kABI does not move. Test builds "
+                             "only until proven on the device.")
     parser.add_argument("--op8e", action="store_true")
     parser.add_argument("--extra-net", action="store_true",
                         help="Enable the optional networking config set: IPv6 NAT "
@@ -199,6 +204,7 @@ def create_build_config(args: argparse.Namespace) -> BuildConfig:
         allow_bazel=args.allow_bazel,
         use_ath9k=args.ath9k,
         use_droidspaces=args.droidspaces,
+        use_droidspaces_pids=args.droidspaces_pids,
         support_op8e=args.op8e,
         use_extra_net=args.extra_net,
         bbr_version=args.bbr_version,

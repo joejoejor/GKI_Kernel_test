@@ -96,6 +96,7 @@ LOGFILE="$HOME/build-$(date +%Y%m%d-%H%M%S).log"
 KSU_COMMIT=""
 SUSFS_COMMIT=""
 NO_HIDE_STUFF=""
+PIDS_CLI=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --ksu-commit)
@@ -126,6 +127,13 @@ while [ "$#" -gt 0 ]; do
             KSU_VERSION_CODE="${1#--ksu-version-code=}"
             shift
             ;;
+        --pids|--droidspaces-pids)
+            # EXPERIMENTAL test builds: CONFIG_CGROUP_PIDS for Droidspaces'
+            # --pids-limit via the net_prio cgroup slot swap (see
+            # DROIDSPACES_PIDS below). Output files get a "-pids" marker.
+            PIDS_CLI="1"
+            shift
+            ;;
         --no-ath9k)
             # ath9k_htc support needs a per-branch
             # ath9k_htc_no_mac80211_leds_<branch>.patch (the MAC80211_LEDS
@@ -137,7 +145,7 @@ while [ "$#" -gt 0 ]; do
             ;;
         *)
             echo "Unknown argument: $1"
-            echo "Usage: $0 [--ksu-commit <tag|commit|branch>] [--susfs-commit <commit|branch=commit,...|latest>] [--ksu-version-code <N>] [--no-hide-stuff] [--no-ath9k]"
+            echo "Usage: $0 [--ksu-commit <tag|commit|branch>] [--susfs-commit <commit|branch=commit,...|latest>] [--ksu-version-code <N>] [--no-hide-stuff] [--no-ath9k] [--pids]"
             echo "Without pin flags, the known-good pins from .github/workflows/scripts/config.py are used."
             exit 1
             ;;
@@ -172,6 +180,16 @@ IS_LTS="1"
 # entry after a build to see whether it actually landed).
 # Defaults to enabled - set to "" to build without it.
 DROIDSPACES="1"
+# EXPERIMENTAL - set to "1" to also enable CONFIG_CGROUP_PIDS for
+# Droidspaces' --pids-limit (android13-5.15 only, needs DROIDSPACES).
+# pids takes the cgroup id of net_prio (turned off), so the GKI kABI and
+# symbol CRCs stay stock. Check PATCH_STATUS.json "droidspaces_pids".
+# Off by default: test builds only until proven on the device.
+# One-off test build without editing this file:
+#   ./build-kernel.sh ... --pids        (or DROIDSPACES_PIDS=1 ./build-kernel.sh ...)
+# check-release.sh prints both commands, with and without --pids.
+DROIDSPACES_PIDS="${DROIDSPACES_PIDS:-}"
+[ -n "$PIDS_CLI" ] && DROIDSPACES_PIDS="1"
 # Congestion control: "none", "bbr1", or "bbr3" (android12/13/14/15
 # so far - see README's "BBRv3" note).
 BBR_VERSION="bbr3"
@@ -364,6 +382,7 @@ for key, entries in data.items():
         [ -n "$t" ] && EXTRA_ARGS+=(--kernel-tag "$t")
         [ -n "$lts" ] && EXTRA_ARGS+=(--lts)
         [ -n "$DROIDSPACES" ] && EXTRA_ARGS+=(--droidspaces)
+        [ -n "$DROIDSPACES_PIDS" ] && EXTRA_ARGS+=(--droidspaces-pids)
         [ -n "$BBG" ] && EXTRA_ARGS+=(--bbg)
         [ -n "$EXTRA_NET" ] && EXTRA_ARGS+=(--extra-net)
         [ -n "$ATH9K" ] && EXTRA_ARGS+=(--ath9k)
@@ -442,12 +461,14 @@ echo "  Kernel:   $KERNEL_VERSION"
 echo "  Sublevel: $SUB_LEVEL"
 echo "  OS Patch: $OS_PATCH"
 [ -n "$KERNEL_TAG" ] && echo "  Kernel Tag: $KERNEL_TAG"
+[ -n "$DROIDSPACES_PIDS" ] && echo "  Droidspaces pids: ON (experimental test build, files get -pids)"
 echo ""
 
 EXTRA_ARGS=()
 [ -n "$KERNEL_TAG" ] && EXTRA_ARGS+=(--kernel-tag "$KERNEL_TAG")
 [ -n "$IS_LTS" ] && EXTRA_ARGS+=(--lts)
 [ -n "$DROIDSPACES" ] && EXTRA_ARGS+=(--droidspaces)
+[ -n "$DROIDSPACES_PIDS" ] && EXTRA_ARGS+=(--droidspaces-pids)
 [ -n "$BBG" ] && EXTRA_ARGS+=(--bbg)
 [ -n "$EXTRA_NET" ] && EXTRA_ARGS+=(--extra-net)
 [ -n "$ATH9K" ] && EXTRA_ARGS+=(--ath9k)

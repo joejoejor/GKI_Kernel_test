@@ -1665,6 +1665,7 @@ CONFIG_CIFS_XATTR=y
             #   CGROUP_SUBSYS_COUNT grows and the subsys[] / e_csets[] arrays
             #   in struct css_set and struct cgroup (both in the KMI) change
             #   size, shifting every field after them for vendor modules.
+            #   Opt-in workaround: --droidspaces-pids (apply_droidspaces_pids_slot).
             # - CONFIG_CFS_BANDWIDTH (--cpus): adds fields to struct cfs_rq,
             #   which is embedded in struct rq, so the layout of struct rq
             #   changes - vendor scheduler modules (WALT etc.) read it directly.
@@ -1672,6 +1673,146 @@ CONFIG_CIFS_XATTR=y
         with open(config_file, "a") as f:
             f.write("\n" + "\n".join(droidspaces_configs) + "\n")
         self._mark("droidspaces", "applied", f"sysvipc variant: {applied_variant}{mqueue_detail}")
+
+    # Stock android13-5.15 GKI cgroup subsystems, in id order. The slot
+    # swap below is only safe while this is exactly what the defconfig
+    # enables - checked against the real tree on every build.
+    _PIDS_SLOT_DONOR = "net_prio"
+
+    @staticmethod
+    def _cgroup_subsys_ids(header_text: str, enabled) -> list:
+        """Subsystem names in id order, as enum cgroup_subsys_id lays them
+        out: every 'SUBSYS(x)' in cgroup_subsys.h whose guarding
+        '#if IS_ENABLED(CONFIG_X)' is on. enabled(sym) -> bool."""
+        import re as _re
+        out = []
+        for sym, name in _re.findall(
+                r'^#if IS_ENABLED\((CONFIG_\w+)\)\s*\nSUBSYS\((\w+)\)',
+                header_text, flags=_re.M):
+            if enabled(sym):
+                out.append(name)
+        return out
+
+    @staticmethod
+    def _defconfig_enabled(lines: list):
+        """enabled(sym) for a defconfig: the LAST assignment wins, like
+        Kconfig. Absent or '# ... is not set' -> False."""
+        state = {}
+        for line in lines:
+            line = line.strip()
+            if line.startswith("CONFIG_") and "=" in line:
+                k, _, v = line.partition("=")
+                state[k] = v.strip() in ("y", "m")
+            elif line.startswith("# CONFIG_") and line.endswith(" is not set"):
+                state[line.split()[1]] = False
+        return lambda sym: state.get(sym, False)
+
+    def apply_droidspaces_pids_slot(self):
+        """Opt-in (--droidspaces-pids): CONFIG_CGROUP_PIDS for Droidspaces'
+        --pids-limit without breaking the GKI kABI.
+
+        A plain CONFIG_CGROUP_PIDS=y adds an 8th cgroup subsystem, which
+        grows the subsys[]/e_csets[] arrays in struct css_set and struct
+        cgroup and shifts every later field for vendor modules. Instead
+        pids takes net_prio's slot: stock 5.15 GKI enables cpuset, cpu,
+        cpuacct, io, memory, freezer, net_prio (ids 0-6) and pids sorts
+        right after net_prio, so CONFIG_CGROUP_NET_PRIO=n +
+        CONFIG_CGROUP_PIDS=y keeps the count at 7 and every other id
+        unchanged. net_prio is a cgroup v1 controller Android doesn't
+        mount, and no vendor KMI symbol list uses its symbols (xiaomi's
+        list DOES use freezer_cgrp_subsys - never pick freezer as donor).
+
+        The patch keeps everything net_prio adds to KMI structs:
+        net_device::priomap, sock_cgroup_data::prioidx and the full
+        struct netprio_map type. While genksyms reads enum
+        cgroup_subsys_id, id 6 keeps its stock name net_prio_cgrp_id, so
+        CRCs stay stock. This is NOT the rejected GENKSYMS bypass: no
+        field is added or hidden, only an enum name with the same value.
+        Verified on android13-5.15 (5.15.194 tree): struct sizes/offsets
+        of css_set, cgroup, cgroup_root, task_struct, sock, net_device
+        identical, and all 11596 genksyms CRCs of kernel/ mm/ net/ fs/
+        block/ lib/ security/ ... identical to stock except
+        net_prio_cgrp_subsys_{enabled,on_dfl}_key replaced by the pids
+        ones.
+
+        Fail-safe: anything unexpected (other branch, different
+        subsystem set, patch not matching at -F 0, NET_PRIO line not
+        found) -> skipped/failed and nothing is changed.
+        """
+        if not getattr(self.config, "use_droidspaces_pids", False):
+            self._mark("droidspaces_pids", "skipped", "not requested")
+            return
+        if self.patch_status.get("droidspaces", {}).get("status") != "applied":
+            self._mark("droidspaces_pids", "skipped", "needs Droidspaces applied first")
+            return
+        if (self.config.android_version, self.config.kernel_version) != ("android13", "5.15"):
+            self._mark("droidspaces_pids", "skipped",
+                       f"only verified for android13-5.15, not "
+                       f"{self.config.android_version}-{self.config.kernel_version}")
+            return
+
+        logger.info("=== Droidspaces pids: net_prio -> pids cgroup slot swap ===")
+        common_dir = self.work_dir / "common"
+        header = common_dir / "include/linux/cgroup_subsys.h"
+        config_file = common_dir / "arch/arm64/configs/gki_defconfig"
+        patch_file = (Path(__file__).parent / "patches" /
+                      f"droidspaces_cgroup_pids_netprio_slot_"
+                      f"{self.config.android_version}-{self.config.kernel_version}.patch")
+        for f in (header, config_file, patch_file):
+            if not f.exists():
+                self._mark("droidspaces_pids", "failed", f"{f.name} missing")
+                return
+
+        lines = config_file.read_text().splitlines()
+        donor_sym = "CONFIG_CGROUP_NET_PRIO"
+        if sum(1 for l in lines if l.strip() == f"{donor_sym}=y") != 1:
+            self._mark("droidspaces_pids", "failed",
+                       f"expected exactly one '{donor_sym}=y' line in gki_defconfig")
+            return
+
+        htext = header.read_text()
+        stock = self._cgroup_subsys_ids(htext, self._defconfig_enabled(lines))
+        swapped_lines = ([l for l in lines if l.strip() != f"{donor_sym}=y"]
+                         + [f"# {donor_sym} is not set", "CONFIG_CGROUP_PIDS=y"])
+        swapped = self._cgroup_subsys_ids(htext, self._defconfig_enabled(swapped_lines))
+        logger.info(f"cgroup subsystems, stock:   {stock}")
+        logger.info(f"cgroup subsystems, swapped: {swapped}")
+        donor = self._PIDS_SLOT_DONOR
+        ok = (donor in stock and "pids" not in stock
+              and len(stock) == len(swapped)
+              and swapped[stock.index(donor)] == "pids"
+              and all(a == b for i, (a, b) in enumerate(zip(stock, swapped))
+                      if i != stock.index(donor)))
+        if not ok:
+            self._mark("droidspaces_pids", "failed",
+                       f"cgroup subsystem layout is not the verified one "
+                       f"(stock {stock}, swapped {swapped}) - nothing changed")
+            return
+
+        self._chdir(common_dir)
+        dry = self._run_cmd(f"patch -p1 -F 0 --dry-run < {patch_file}", check=False)
+        if dry.returncode != 0:
+            self._chdir(self.work_dir)
+            self._mark("droidspaces_pids", "failed",
+                       "slot-swap patch does not match this tree at -F 0 - nothing changed")
+            return
+        res = self._run_cmd(f"patch -p1 -F 0 --no-backup-if-mismatch < {patch_file}", check=False)
+        self._chdir(self.work_dir)
+        if res.returncode != 0:
+            raise RuntimeError("droidspaces pids slot-swap patch failed after a clean dry-run")
+
+        out = []
+        for l in lines:
+            if l.strip() == f"{donor_sym}=y":
+                out.append("# Droidspaces pids slot swap: net_prio gives its cgroup id to pids")
+                out.append(f"# {donor_sym} is not set")
+            else:
+                out.append(l)
+        out += ["", "# Droidspaces --pids-limit (takes net_prio's cgroup id, kABI-neutral)",
+                "CONFIG_CGROUP_PIDS=y"]
+        config_file.write_text("\n".join(out) + "\n")
+        self._mark("droidspaces_pids", "applied",
+                   f"pids takes cgroup id {stock.index(donor)} from {donor}")
 
     def apply_bbrv3_patches(self):
         """Backports BBRv3 (github.com/WildKernels/kernel_patches, common/bbrv3)
@@ -3577,9 +3718,14 @@ CONFIG_CIFS_XATTR=y
         don't overwrite/get confused with a thin-LTO build of the same
         respin. Bazel/Kleaf branches stay untagged ("") since LTO mode
         there is fixed upstream (see build_kernel()), not user-chosen."""
+        suffix = ""
         if (self.work_dir / "build/build.sh").exists() and self.config.lto_mode == "full":
-            return "-lto-full"
-        return ""
+            suffix = "-lto-full"
+        # Experimental pids slot-swap builds must never be mistaken for a
+        # normal release build.
+        if self.patch_status.get("droidspaces_pids", {}).get("status") == "applied":
+            suffix += "-pids"
+        return suffix
 
     def _mem_used_mb(self) -> Optional[float]:
         """Reads /proc/meminfo and returns current used RAM in MB
@@ -4164,6 +4310,11 @@ CONFIG_CIFS_XATTR=y
         stack and the driver becomes unloadable.
         """
         out = []
+        if self.patch_status.get("droidspaces_pids", {}).get("status") == "applied":
+            # Both fatal: PIDS on with NET_PRIO still on means 8 cgroup
+            # subsystems - exactly the kABI break the slot swap avoids.
+            out.append(("CONFIG_CGROUP_PIDS", "y", True))
+            out.append(("CONFIG_CGROUP_NET_PRIO", None, True))
         if self.config.use_ath9k:
             for line in self._ath9k_fragment_lines():
                 if line.startswith("CONFIG_") and "=" in line:
@@ -4599,6 +4750,8 @@ CONFIG_CIFS_XATTR=y
             # this new optional feature that fails/gets skipped, never
             # SUSFS.
             self.apply_droidspaces_support()
+            # Opt-in, needs the Droidspaces step above to have applied.
+            self.apply_droidspaces_pids_slot()
             # BBRv3 touches net/ipv4/* only - no overlap with SUSFS/
             # Droidspaces' files, but applied here too for consistency
             # (all optional features settled before writing defconfig).

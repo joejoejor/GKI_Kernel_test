@@ -1,0 +1,107 @@
+diff --git a/include/linux/cgroup-defs.h b/include/linux/cgroup-defs.h
+index cd8b8bd5e..e971a845d 100644
+--- a/include/linux/cgroup-defs.h
++++ b/include/linux/cgroup-defs.h
+@@ -40,10 +40,12 @@ struct poll_table_struct;
+ 
+ /* define the enumeration of all cgroup subsystems */
+ #define SUBSYS(_x) _x ## _cgrp_id,
++#define CGROUP_SUBSYS_ID_ENUM	/* see the pids slot swap note in cgroup_subsys.h */
+ enum cgroup_subsys_id {
+ #include <linux/cgroup_subsys.h>
+ 	CGROUP_SUBSYS_COUNT,
+ };
++#undef CGROUP_SUBSYS_ID_ENUM
+ #undef SUBSYS
+ 
+ /* bits in struct cgroup_subsys_state flags field */
+@@ -764,9 +766,11 @@ struct sock_cgroup_data {
+ #ifdef CONFIG_CGROUP_NET_CLASSID
+ 	u32		classid; /* v1 */
+ #endif
+-#ifdef CONFIG_CGROUP_NET_PRIO
++	/*
++	 * Kept even with CONFIG_CGROUP_NET_PRIO=n: the Droidspaces pids slot
++	 * swap turns net_prio off, and struct sock must keep its GKI layout.
++	 */
+ 	u16		prioidx; /* v1 */
+-#endif
+ };
+ 
+ static inline u16 sock_cgroup_prioidx(const struct sock_cgroup_data *skcd)
+diff --git a/include/linux/cgroup_subsys.h b/include/linux/cgroup_subsys.h
+index 445235487..b15cdcad5 100644
+--- a/include/linux/cgroup_subsys.h
++++ b/include/linux/cgroup_subsys.h
+@@ -45,7 +45,17 @@ SUBSYS(net_cls)
+ SUBSYS(perf_event)
+ #endif
+ 
+-#if IS_ENABLED(CONFIG_CGROUP_NET_PRIO)
++/*
++ * Droidspaces pids slot swap (GKI kABI): with CONFIG_CGROUP_NET_PRIO=n and
++ * CONFIG_CGROUP_PIDS=y, pids takes net_prio's id, so the subsystem count
++ * and every other id stay the same and no struct layout moves. Only while
++ * genksyms reads enum cgroup_subsys_id (CGROUP_SUBSYS_ID_ENUM, set in
++ * cgroup-defs.h) the id keeps its stock name net_prio_cgrp_id, so the CRCs
++ * of everything built on that enum match the stock GKI kernel. Same value,
++ * same size - nothing is added to or hidden from any struct.
++ */
++#if IS_ENABLED(CONFIG_CGROUP_NET_PRIO) || \
++	(defined(__GENKSYMS__) && defined(CGROUP_SUBSYS_ID_ENUM) && IS_ENABLED(CONFIG_CGROUP_PIDS))
+ SUBSYS(net_prio)
+ #endif
+ 
+@@ -53,7 +63,8 @@ SUBSYS(net_prio)
+ SUBSYS(hugetlb)
+ #endif
+ 
+-#if IS_ENABLED(CONFIG_CGROUP_PIDS)
++#if IS_ENABLED(CONFIG_CGROUP_PIDS) && \
++	!(defined(__GENKSYMS__) && defined(CGROUP_SUBSYS_ID_ENUM) && !IS_ENABLED(CONFIG_CGROUP_NET_PRIO))
+ SUBSYS(pids)
+ #endif
+ 
+diff --git a/include/linux/netdevice.h b/include/linux/netdevice.h
+index 284e6ce44..e13c222d7 100644
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -2289,9 +2289,11 @@ struct net_device {
+ #if IS_ENABLED(CONFIG_FCOE)
+ 	unsigned int		fcoe_ddp_xid;
+ #endif
+-#if IS_ENABLED(CONFIG_CGROUP_NET_PRIO)
++	/*
++	 * Kept even with CONFIG_CGROUP_NET_PRIO=n: the Droidspaces pids slot
++	 * swap turns net_prio off, and this field must stay for the GKI kABI.
++	 */
+ 	struct netprio_map __rcu *priomap;
+-#endif
+ 	struct phy_device	*phydev;
+ 	struct sfp_bus		*sfp_bus;
+ 	struct lock_class_key	*qdisc_tx_busylock;
+diff --git a/include/net/netprio_cgroup.h b/include/net/netprio_cgroup.h
+index dec7522b6..86aa3df7d 100644
+--- a/include/net/netprio_cgroup.h
++++ b/include/net/netprio_cgroup.h
+@@ -12,13 +12,19 @@
+ #include <linux/hardirq.h>
+ #include <linux/rcupdate.h>
+ 
+-#if IS_ENABLED(CONFIG_CGROUP_NET_PRIO)
++/*
++ * Defined even with CONFIG_CGROUP_NET_PRIO=n: struct net_device keeps its
++ * priomap pointer for the GKI kABI (Droidspaces pids slot swap), and the
++ * full type must stay visible so symbol CRCs match the stock kernel.
++ */
+ struct netprio_map {
+ 	struct rcu_head rcu;
+ 	u32 priomap_len;
+ 	u32 priomap[];
+ };
+ 
++#if IS_ENABLED(CONFIG_CGROUP_NET_PRIO)
++
+ static inline u32 task_netprioidx(struct task_struct *p)
+ {
+ 	struct cgroup_subsys_state *css;
