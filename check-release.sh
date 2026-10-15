@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # check-release.sh - is there something new to build, and exactly how?
 #
-# Tracks SukiSU-Ultra main (UAPI 4) + susfs4ksu branch HEAD. Without building
+# Tracks SukiSU-Ultra main HEAD + susfs4ksu branch HEAD. Without building
 # anything it:
-#   1. finds the newest SukiSU ref worth building (a UAPI>=4 tag if one exists,
-#      otherwise main HEAD) and computes its version code the same way the
+#   1. takes SukiSU main HEAD (never a tag: the manager everyone installs is
+#      the CI build of main HEAD, and a tag is usually followed by a version
+#      bump commit, so building the tag gives a kernel one version code
+#      behind that manager) and computes its version code the same way the
 #      kernel Kbuild and the manager do,
 #   2. finds the newest susfs commit for the branch,
 #   3. applies 10_enable_susfs_for_ksu.patch FOR REAL in a throwaway worktree
@@ -244,18 +246,23 @@ PIN_SHA="$(sha_of "$SUKI" "$PINNED_KSU_REF")"
 MAIN_SHA="$(sha_of "$SUKI" origin/main)"
 MAIN_UAPI="$(uapi_of origin/main)"; : "${MAIN_UAPI:=?}"
 
-# Prefer a tag if one carries the same UAPI as main - tags don't move.
-CAND_REF=""; CAND_LABEL=""
+# Always main HEAD: the manager CI builds (and the release APK) come from main,
+# and SukiSU tags a release BEFORE bumping VERSION_TAG in kernel/Kbuild, so the
+# tag itself is one version code behind the manager people install. The newest
+# tag is only shown for reference (handy for the release notes).
+CAND_SHA="$MAIN_SHA"; CAND_LABEL="main"
 NEWEST_TAG="$(git -C "$SUKI" tag --sort=-creatordate | head -n1)"
-TAG_UAPI="$(uapi_of "$NEWEST_TAG")"; : "${TAG_UAPI:=-}"
-if [ "$TAG_UAPI" != "-" ] && [ "$MAIN_UAPI" != "?" ] && [ "$TAG_UAPI" -ge "$MAIN_UAPI" ] 2>/dev/null; then
-    CAND_REF="$NEWEST_TAG"; CAND_LABEL="tag $NEWEST_TAG"
-    ok "Tag ${B}$NEWEST_TAG${N} carries UAPI $TAG_UAPI - building from the tag."
-else
-    CAND_REF="$MAIN_SHA"; CAND_LABEL="main"
-    echo "  Newest tag: $NEWEST_TAG (UAPI $TAG_UAPI) - main is UAPI $MAIN_UAPI, so building from main."
+if [ -n "$NEWEST_TAG" ]; then
+    TAG_SHA="$(sha_of "$SUKI" "$NEWEST_TAG")"
+    if [ "$TAG_SHA" = "$MAIN_SHA" ]; then
+        echo "  Newest tag: ${B}$NEWEST_TAG${N} - main HEAD is the tag itself (UAPI $MAIN_UAPI)."
+    elif git -C "$SUKI" merge-base --is-ancestor "$TAG_SHA" "$MAIN_SHA" 2>/dev/null; then
+        echo "  Newest tag: ${B}$NEWEST_TAG${N} ($(version_code_of "$TAG_SHA" || echo '?')) - main is" \
+             "$(git -C "$SUKI" rev-list --count "$TAG_SHA..$MAIN_SHA") commit(s) ahead, building main (UAPI $MAIN_UAPI)."
+    else
+        echo "  Newest tag: $NEWEST_TAG (not on main) - building main (UAPI $MAIN_UAPI)."
+    fi
 fi
-CAND_SHA="$(sha_of "$SUKI" "$CAND_REF")"
 CAND_CODE="$(version_code_of "$CAND_SHA")" || CAND_CODE="?"
 
 printf "  %-10s %-10s %-12s %s\n" "" "SHA" "DATE" "VERSION"
@@ -536,5 +543,5 @@ if [ "$KSU_NEW" = 1 ] || [ "$SUSFS_NEW" = 1 ]; then
     echo "   3. After it boots: manager shows ${CAND_CODE}-${MAIN_UAPI} for both, check-features.sh is clean."
     echo "   4. Run ${B}./check-release.sh${N} again - it will ask if this build works."
     echo "      Answer 1 and it saves these values into config.py by itself."
-    echo "      Then push config.py (gitsync push) and release as v${CAND_CODE}-r01."
+    echo "      Then push config.py (gitsync push) and release as v${CAND_CODE}."
 fi

@@ -1656,6 +1656,18 @@ CONFIG_CIFS_XATTR=y
             "CONFIG_BINFMT_MISC=y",
             "CONFIG_BINFMT_SCRIPT=y",
             "CONFIG_BINFMT_ELF=y",
+            # --net=macvlan. kABI-safe: a self-contained driver, struct
+            # net_device only uses the IFF_MACVLAN* priv_flags, which exist
+            # unconditionally (GKI already ships CONFIG_IPVLAN=y the same way).
+            "CONFIG_MACVLAN=y",
+            # Deliberately NOT enabled (Droidspaces lists them as optional):
+            # - CONFIG_CGROUP_PIDS (--pids-limit): adds a cgroup subsystem, so
+            #   CGROUP_SUBSYS_COUNT grows and the subsys[] / e_csets[] arrays
+            #   in struct css_set and struct cgroup (both in the KMI) change
+            #   size, shifting every field after them for vendor modules.
+            # - CONFIG_CFS_BANDWIDTH (--cpus): adds fields to struct cfs_rq,
+            #   which is embedded in struct rq, so the layout of struct rq
+            #   changes - vendor scheduler modules (WALT etc.) read it directly.
         ]
         with open(config_file, "a") as f:
             f.write("\n" + "\n".join(droidspaces_configs) + "\n")
