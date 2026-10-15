@@ -185,6 +185,13 @@ su -c "unshare -pf echo namespace-test-ok"
 ```
 Active if it prints `namespace-test-ok` without an error.
 
+**Droidspaces macvlan networking** (`--net=macvlan`, since v40993) - built together with Droidspaces:
+```bash
+su -c "zcat /proc/config.gz | grep CONFIG_MACVLAN"
+su -c "/system/bin/ip link add mvtest link wlan0 type macvlan mode bridge && /system/bin/ip -d link show mvtest && /system/bin/ip link del mvtest"
+```
+Active if it shows `CONFIG_MACVLAN=y` and the second command prints `mvtest` with `macvlan mode bridge` and no error. CPU and process limits (`--cpus`, `--pids-limit`) are left out on purpose: `CONFIG_CFS_BANDWIDTH` and `CONFIG_CGROUP_PIDS` change struct layouts in the GKI KMI and would break vendor modules.
+
 **NTSync (Winlator/Wine)** — kernel driver (`/dev/ntsync`) emulating Windows NT sync primitives (semaphores/mutexes/events) natively instead of over futex: better compatibility and lower overhead for Wine-based layers like Winlator. Only on branches with a compatible backport.
 ```bash
 su -c "ls -la /dev/ntsync"
