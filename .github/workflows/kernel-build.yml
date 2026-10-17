@@ -28,32 +28,37 @@ on:
           - "6.6"
         default: "5.15"
       sub_level:
-        description: 'Sub Level Version (e.g. 216)'
+        description: 'Sub Level Version'
         required: true
         type: string
         default: '216'
       os_patch_level:
-        description: 'OS Patch Level (e.g. 2026-09)'
+        description: 'OS Patch Level'
         required: true
         type: string
         default: '2026-09'
+      revision:
+        description: 'Android 12 Revision (optional)'
+        required: false
+        type: string
+        default: ''
       kernel_tag:
-        description: 'Kernel tag override (optional)'
+        description: 'Kernel tag override (optional). Auto-resolved from matrix.json for this sub_level/os_patch if already listed there.'
         required: false
         type: string
         default: ''
       kernelsu_commit:
-        description: 'SukiSU-Ultra tag/branch/commit (optional)'
+        description: 'SukiSU-Ultra tag/branch/commit.'
         required: false
         type: string
         default: ''
       ksu_version_code:
-        description: 'SukiSU version number (optional)'
+        description: 'Version number SukiSU reports.'
         required: false
         type: string
         default: ''
       susfs_commit:
-        description: 'susfs4ksu pin (optional)'
+        description: 'susfs4ksu pin.'
         required: false
         type: string
         default: ''
@@ -78,12 +83,12 @@ on:
         type: boolean
         default: true
       use_psi:
-        description: 'Enable PSI'
+        description: 'Enable PSI (Pressure Stall Information)'
         required: true
         type: boolean
         default: true
       use_ntsync:
-        description: 'Enable NTSync (Winlator)'
+        description: 'Enable NTSync (Winlator/Wine NT sync primitives)'
         required: true
         type: boolean
         default: true
@@ -93,12 +98,22 @@ on:
         type: boolean
         default: true
       DROIDSPACES:
-        description: 'Enable Droidspaces'
+        description: 'Enable Droidspaces container-runtime support'
         required: true
         type: boolean
         default: true
+      supp_op:
+        description: 'Enable OnePlus 8E support'
+        required: true
+        type: boolean
+        default: false
+      hide_stuff:
+        description: 'Apply 69_hide_stuff.patch'
+        required: true
+        type: boolean
+        default: false
       extra_net:
-        description: 'Extra networking configs'
+        description: 'Extra networking configs: IPv6 NAT, nftables, extra ipset types'
         required: false
         type: boolean
         default: true
@@ -185,7 +200,7 @@ jobs:
               '.[$key][]? | select((.sub_level|tostring) == $sub and .os_patch_level == $patch) | .kernel_tag // empty' \
               .github/workflows/config/matrix.json 2>/dev/null | head -n1)
             SRC="matrix.json"
-          fi
+          
 
           if [ -n "$RESOLVED" ]; then
             echo "Resolved kernel_tag ($SRC): $RESOLVED"
@@ -222,7 +237,8 @@ jobs:
           ARGS="$ARGS --kernel ${{ github.event.inputs.kernel_version }}"
           ARGS="$ARGS --sub-level ${{ github.event.inputs.sub_level }}"
           ARGS="$ARGS --os-patch ${{ github.event.inputs.os_patch_level }}"
-          [ -n "${{ github.event.inputs.kernel_tag }}" ] && ARGS="$ARGS --kernel-tag ${{ github.event.inputs.kernel_tag }}"
+          [ -n "${{ github.event.inputs.revision }}" ] && ARGS="$ARGS --revision ${{ github.event.inputs.revision }}"
+          [ -n "${{ steps.resolve-tag.outputs.kernel_tag }}" ] && ARGS="$ARGS --kernel-tag ${{ steps.resolve-tag.outputs.kernel_tag }}"
 
           [ "${{ github.event.inputs.use_zram }}" = "true" ] && ARGS="$ARGS --zram"
           [ "${{ github.event.inputs.use_kpm }}" = "false" ] && ARGS="$ARGS --no-kpm"
@@ -231,6 +247,8 @@ jobs:
           [ "${{ github.event.inputs.use_ntsync }}" = "false" ] && ARGS="$ARGS --no-ntsync"
           [ "${{ github.event.inputs.BBG }}" = "true" ] && ARGS="$ARGS --bbg"
           [ "${{ github.event.inputs.DROIDSPACES }}" = "true" ] && ARGS="$ARGS --droidspaces"
+          [ "${{ github.event.inputs.supp_op }}" = "true" ] && ARGS="$ARGS --op8e"
+          [ "${{ github.event.inputs.hide_stuff }}" = "false" ] && ARGS="$ARGS --no-hide-stuff"
           [ "${{ github.event.inputs.extra_net }}" = "true" ] && ARGS="$ARGS --extra-net"
           ARGS="$ARGS --bbr-version ${{ github.event.inputs.bbr_version }}"
           ARGS="$ARGS --lto-mode thin"
@@ -246,10 +264,11 @@ jobs:
         run: |
           mkdir -p artifacts
           find /tmp/gki-build -name "*AnyKernel3*.zip" -type f -exec cp {} artifacts/ \;
-          find /tmp/gki-build -name "*-boot.img" -type f -exec cp {} artifacts/ \;
+          find /tmp/gkl-build -name "*-boot.img" -type f -exec cp {} artifacts/ \;
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: kernel-${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.sub_level }}
           path: artifacts/*
+          
