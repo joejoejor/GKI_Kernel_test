@@ -43,22 +43,22 @@ on:
         type: string
         default: ''
       kernel_tag:
-        description: 'Kernel tag override (optional). Auto-resolved from matrix.json for this sub_level/os_patch if already listed there.'
+        description: 'Kernel tag override (optional). Auto-resolved from matrix.json for this sub_level/os_patch if already listed there - only fill this in manually for a sub_level/os_patch NOT yet in matrix.json (e.g. android13-5.15.209_r00), otherwise leave empty.'
         required: false
         type: string
         default: ''
       kernelsu_commit:
-        description: 'SukiSU-Ultra tag/branch/commit.'
+        description: 'SukiSU-Ultra tag/branch/commit. Leave empty for the known-good pin in config.py (DEFAULT_KSU_REF - what the latest release was built from). "main" tracks the moving branch.'
         required: false
         type: string
         default: ''
       ksu_version_code:
-        description: 'Version number SukiSU reports.'
+        description: 'Version number SukiSU reports - must match your manager. Leave empty: uses DEFAULT_KSU_VERSION_CODE from config.py when SukiSU is the default pin, otherwise GitHub''s live count.'
         required: false
         type: string
         default: ''
       susfs_commit:
-        description: 'susfs4ksu pin.'
+        description: 'susfs4ksu pin. Leave empty for DEFAULT_SUSFS_PINS in config.py. Bare hash (for this branch), per-branch "gki-android13-5.15=<hash>,...", or "latest" for branch HEAD.'
         required: false
         type: string
         default: ''
@@ -98,7 +98,7 @@ on:
         type: boolean
         default: true
       DROIDSPACES:
-        description: 'Enable Droidspaces container-runtime support'
+        description: 'Enable Droidspaces container-runtime support (namespaces for full Linux distros - see README) - android12/13/14 (5.10/5.15/6.1) only. Uncheck to build without it.'
         required: true
         type: boolean
         default: true
@@ -108,7 +108,7 @@ on:
         type: boolean
         default: false
       hide_stuff:
-        description: 'Apply 69_hide_stuff.patch'
+        description: 'Apply 69_hide_stuff.patch (LineageOS/jit-zygote-cache path spoofing) - currently stale against susfs4ksu and fails the build; uncheck to skip it until ShirkNeko/SukiSU_patch fixes it'
         required: true
         type: boolean
         default: false
@@ -118,7 +118,7 @@ on:
         type: boolean
         default: true
       bbr_version:
-        description: 'BBR congestion control version'
+        description: 'BBR congestion control version (bbr3: android12/13/14 only - see README)'
         required: true
         type: choice
         options:
@@ -200,26 +200,34 @@ jobs:
               '.[$key][]? | select((.sub_level|tostring) == $sub and .os_patch_level == $patch) | .kernel_tag // empty' \
               .github/workflows/config/matrix.json 2>/dev/null | head -n1)
             SRC="matrix.json"
-          
+          fi
 
           if [ -n "$RESOLVED" ]; then
             echo "Resolved kernel_tag ($SRC): $RESOLVED"
           else
-            echo "::warning::No kernel_tag resolved."
+            echo "::warning::No kernel_tag resolved (not found in matrix.json for this sub_level/os_patch, and none entered manually). The build will track the moving branch HEAD instead of pinning an exact respin - the artifact filename may omit the revision suffix, AND the actually compiled kernel source may not correspond to the sub_level you entered. If this sub_level/os_patch is not yet in matrix.json, fill in the 'Kernel Tag' input manually with the exact upstream tag (e.g. android13-5.15.209_r00)."
           fi
+
           echo "kernel_tag=$RESOLVED" >> "$GITHUB_OUTPUT"
+
+          IS_LTS=$(jq -r --arg key "${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}" \
+                         --arg sub "${{ github.event.inputs.sub_level }}" \
+                         --arg patch "${{ github.event.inputs.os_patch_level }}" \
+            '.[$key][]? | select((.sub_level|tostring) == $sub and .os_patch_level == $patch) | .lts // false' \
+            .github/workflows/config/matrix.json 2>/dev/null | head -n1)
+          echo "is_lts=$IS_LTS" >> "$GITHUB_OUTPUT"
 
       - name: Setup Neutron Clang
         run: |
-          mkdir -p "$HOME/neutron-clang"
-          cd "$HOME/neutron-clang"
-          curl -LO "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman"
-          chmod +x antman
-          ./antman -S
-          ./antman --patch=glibc
-          echo "NEUTRON_PATH=$HOME/neutron-clang/bin" >> $GITHUB_ENV
-          echo "$HOME/neutron-clang/bin" >> $GITHUB_PATH
-
+              mkdir -p "$HOME/neutron-clang"
+              cd "$HOME/neutron-clang"
+              curl -LO "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman"
+              chmod +x antman
+              ./antman -S
+              ./antman --patch=glibc
+              echo "NEUTRON_PATH=$HOME/neutron-clang/bin" >> $GITHUB_ENV
+              echo "$HOME/neutron-clang/bin" >> $GITHUB_PATH
+              
       - name: Inject 300Hz Timer Config
         run: |
           find . -name "gki_defconfig" -o -name "*defconfig" | while read config; do
@@ -239,6 +247,7 @@ jobs:
           ARGS="$ARGS --os-patch ${{ github.event.inputs.os_patch_level }}"
           [ -n "${{ github.event.inputs.revision }}" ] && ARGS="$ARGS --revision ${{ github.event.inputs.revision }}"
           [ -n "${{ steps.resolve-tag.outputs.kernel_tag }}" ] && ARGS="$ARGS --kernel-tag ${{ steps.resolve-tag.outputs.kernel_tag }}"
+          [ "${{ steps.resolve-tag.outputs.is_lts }}" = "true" ] && ARGS="$ARGS --lts"
 
           [ "${{ github.event.inputs.use_zram }}" = "true" ] && ARGS="$ARGS --zram"
           [ "${{ github.event.inputs.use_kpm }}" = "false" ] && ARGS="$ARGS --no-kpm"
@@ -264,11 +273,54 @@ jobs:
         run: |
           mkdir -p artifacts
           find /tmp/gki-build -name "*AnyKernel3*.zip" -type f -exec cp {} artifacts/ \;
-          find /tmp/gkl-build -name "*-boot.img" -type f -exec cp {} artifacts/ \;
+          find /tmp/gki-build -name "*-boot.img" -type f -exec cp {} artifacts/ \;
+
+      - name: Patch status summary
+        run: |
+          mkdir -p build-results
+          PATCH_STATUS_SRC=$(find /tmp/gki-build -maxdepth 2 -name "PATCH_STATUS.json" | head -n1)
+          if [ -n "$PATCH_STATUS_SRC" ]; then
+            cp "$PATCH_STATUS_SRC" "build-results/${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.sub_level }}.patches.json"
+          fi
+          cd ./.github/workflows/scripts
+          python3 patch_summary.py ../../../build-results "$GITHUB_STEP_SUMMARY"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: kernel-${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.sub_level }}
           path: artifacts/*
+
+      - name: Generate checksums
+        run: |
+          echo "=== Creating checksums ==="
+          sha256sum artifacts/* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Send Telegram Notification
+        if: ${{ github.event.inputs.send_telegram == 'true' && success() }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_MESSAGE_THREAD_ID: ${{ secrets.TELEGRAM_MESSAGE_THREAD_ID }}
+        run: |
+          set +e
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "::warning::TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID secret not configured - skipping Telegram notification (the kernel build itself still succeeded)"
+            exit 0
+          fi
+          cd ./.github/workflows/scripts
+          python3 telegram_notify.py single \
+            "${{ github.event.inputs.android_version }}" \
+            "${{ github.event.inputs.kernel_version }}" \
+            "${{ github.event.inputs.sub_level }}" \
+            "${{ github.event.inputs.os_patch_level }}" \
+            "${{ github.event.inputs.ksu_version_code || 'default (config.py)' }}" \
+            "${{ github.event.inputs.use_zram }}" \
+            "${{ github.event.inputs.use_kpm }}" \
+            "../../SHA256SUMS.txt"
+          if [ $? -ne 0 ]; then
+            echo "::warning::Telegram notification failed to send - the kernel build itself still succeeded"
+          fi
+          exit 0
           
