@@ -170,14 +170,6 @@ jobs:
           sudo apt install -y ccache python3 git curl wget zip unzip
           pip install PyYAML
 
-      - name: Setup AVB signing key
-        env:
-          BOOT_SIGN_KEY: ${{ secrets.BOOT_SIGN_KEY }}
-        run: |
-          mkdir -p toolchain/linux-x86/bin
-          echo "$BOOT_SIGN_KEY" > toolchain/linux-x86/bin/testkey.pem
-          echo "BOOT_SIGN_KEY_PATH=$GITHUB_WORKSPACE/toolchain/linux-x86/bin/testkey.pem" >> $GITHUB_ENV
-
       - name: Configure ccache
         run: |
           mkdir -p ~/.cache/bazel
@@ -241,6 +233,18 @@ jobs:
               ./antman --patch=glibc
               echo "NEUTRON_PATH=$HOME/neutron-clang/bin" >> $GITHUB_ENV
               echo "$HOME/neutron-clang/bin" >> $GITHUB_PATH
+              
+      - name: Inject 300Hz Timer Config
+        run: |
+          # Cari lokasi fail defconfig atau konfigurasi kernel 5.15 dan tetapkan HZ kepada 300
+          # Bergantung kepada struktur skrip, kita boleh masukkan parameter config secara langsung:
+          find . -name "gki_defconfig" -o -name "*defconfig" | while read config; do
+            sed -i '/CONFIG_HZ_[0-9]\+/d' "$config"
+            echo "CONFIG_HZ_300=y" >> "$config"
+            echo "CONFIG_HZ=300" >> "$config"
+          echo "Injected 300Hz timer into $config"
+          done
+          
 
       - name: Build kernel
         run: |
